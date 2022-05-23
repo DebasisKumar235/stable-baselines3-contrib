@@ -64,9 +64,9 @@ setup(
     name="sb3_contrib",
     packages=[package for package in find_packages() if package.startswith("sb3_contrib")],
     package_data={"sb3_contrib": ["py.typed", "version.txt"]},
-    install_requires=[
-        "stable_baselines3>=1.5.1a5",
-    ],
+    # install_requires=[
+    #     "stable_baselines3>=1.5.1a5",
+    # ],
     description="Contrib package of Stable Baselines3, experimental code.",
     author="Antonin Raffin",
     url="https://github.com/Stable-Baselines-Team/stable-baselines3-contrib",

@@ -103,6 +103,7 @@ class TQC(OffPolicyAlgorithm):
         _init_setup_model: bool = True,
     ):
 
+        print( "*******************************************SHIT" )
         super().__init__(
             policy,
             env,
@@ -181,6 +182,110 @@ class TQC(OffPolicyAlgorithm):
         self.critic = self.policy.critic
         self.critic_target = self.policy.critic_target
 
+    def expert_train(self, gradient_steps: int, batch_size: int = 64 ) -> None:
+
+        # Switch to train mode (this affects batch norm / dropout)
+        self.policy.set_training_mode(True)
+        # Update optimizers learning rate
+        optimizers = [self.actor.optimizer, self.critic.optimizer]
+        if self.ent_coef_optimizer is not None:
+            optimizers += [self.ent_coef_optimizer]
+
+        # Update learning rate according to lr schedule
+        self._update_learning_rate(optimizers)
+
+        ent_coef_losses, ent_coefs = [], []
+        actor_losses, critic_losses = [], []
+
+        # Sample replay buffer
+        replay_data = self.expert_replay_buffer.get_all_data( env=self._vec_normalize_env )
+
+        for gradient_step in range(gradient_steps):            
+            # We need to sample because `log_std` may have changed between two gradient steps
+            if self.use_sde:
+                self.actor.reset_noise()
+
+            batch_size = len( replay_data.observations )
+            # Action by the current actor for the sampled state
+            actions_pi, log_prob = self.actor.action_log_prob(replay_data.observations)
+            log_prob = log_prob.reshape(-1, 1)
+
+            ent_coef_loss = None
+            if self.ent_coef_optimizer is not None:
+                # Important: detach the variable from the graph
+                # so we don't change it with other losses
+                # see https://github.com/rail-berkeley/softlearning/issues/60
+                ent_coef = th.exp(self.log_ent_coef.detach())
+                ent_coef_loss = -(self.log_ent_coef * (log_prob + self.target_entropy).detach()).mean()
+                ent_coef_losses.append(ent_coef_loss.item())
+            else:
+                ent_coef = self.ent_coef_tensor
+
+            ent_coefs.append(ent_coef.item())
+            self.replay_buffer.ent_coef = ent_coef.item()
+
+            # Optimize entropy coefficient, also called
+            # entropy temperature or alpha in the paper
+            if ent_coef_loss is not None:
+                self.ent_coef_optimizer.zero_grad()
+                ent_coef_loss.backward()
+                self.ent_coef_optimizer.step()
+
+            with th.no_grad():
+                # Select action according to policy
+                next_actions, next_log_prob = self.actor.action_log_prob(replay_data.next_observations)
+                # Compute and cut quantiles at the next state
+                # batch x nets x quantiles
+                next_quantiles = self.critic_target(replay_data.next_observations, next_actions)
+
+                # Sort and drop top k quantiles to control overestimation.
+                n_target_quantiles = self.critic.quantiles_total - self.top_quantiles_to_drop_per_net * self.critic.n_critics
+                next_quantiles, _ = th.sort(next_quantiles.reshape(batch_size, -1))
+                next_quantiles = next_quantiles[:, :n_target_quantiles]
+
+                # td error + entropy term
+                target_quantiles = next_quantiles - ent_coef * next_log_prob.reshape(-1, 1)
+                target_quantiles = replay_data.rewards + (1 - replay_data.dones) * self.gamma * target_quantiles
+                # Make target_quantiles broadcastable to (batch_size, n_critics, n_target_quantiles).
+                target_quantiles.unsqueeze_(dim=1)
+
+            # Get current Quantile estimates using action from the replay buffer
+            current_quantiles = self.critic(replay_data.observations, replay_data.actions)
+            # Compute critic loss, not summing over the quantile dimension as in the paper.
+            critic_loss = quantile_huber_loss(current_quantiles, target_quantiles, sum_over_quantiles=False)
+            critic_losses.append(critic_loss.item())
+
+            # Optimize the critic
+            self.critic.optimizer.zero_grad()
+            critic_loss.backward()
+            self.critic.optimizer.step()
+
+            # Compute actor loss
+            qf_pi = self.critic(replay_data.observations, actions_pi).mean(dim=2).mean(dim=1, keepdim=True)
+            actor_loss = (ent_coef * log_prob - qf_pi).mean()
+            actor_losses.append(actor_loss.item())
+
+            # Optimize the actor
+            self.actor.optimizer.zero_grad()
+            actor_loss.backward()
+            self.actor.optimizer.step()
+
+            # Update target networks
+            if gradient_step % self.target_update_interval == 0:
+                polyak_update(self.critic.parameters(), self.critic_target.parameters(), self.tau)
+
+            print( f"Export training step {gradient_step} actor_loss={actor_loss.item()} critic_loss={critic_loss.item()}" )
+
+
+        self._n_updates += gradient_steps
+
+        self.logger.record("train/n_updates", self._n_updates, exclude="tensorboard")
+        self.logger.record("train/ent_coef", np.mean(ent_coefs))
+        self.logger.record("train/actor_loss", np.mean(actor_losses))
+        self.logger.record("train/critic_loss", np.mean(critic_losses))
+        if len(ent_coef_losses) > 0:
+            self.logger.record("train/ent_coef_loss", np.mean(ent_coef_losses))
+
     def train(self, gradient_steps: int, batch_size: int = 64) -> None:
         # Switch to train mode (this affects batch norm / dropout)
         self.policy.set_training_mode(True)
@@ -198,7 +303,7 @@ class TQC(OffPolicyAlgorithm):
         for gradient_step in range(gradient_steps):
             # Sample replay buffer
             replay_data = self.replay_buffer.sample(batch_size, env=self._vec_normalize_env)
-
+            
             # We need to sample because `log_std` may have changed between two gradient steps
             if self.use_sde:
                 self.actor.reset_noise()
