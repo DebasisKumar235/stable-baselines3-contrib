@@ -287,6 +287,8 @@ class TQC(OffPolicyAlgorithm):
             self.logger.record("train/ent_coef_loss", np.mean(ent_coef_losses))
 
     def train(self, gradient_steps: int, batch_size: int = 64) -> None:
+        #print( f"\n ===================gradient_steps={gradient_steps} \n" )
+        
         # Switch to train mode (this affects batch norm / dropout)
         self.policy.set_training_mode(True)
         # Update optimizers learning rate
@@ -299,11 +301,14 @@ class TQC(OffPolicyAlgorithm):
 
         ent_coef_losses, ent_coefs = [], []
         actor_losses, critic_losses = [], []
-
+        original_batch_size = batch_size
         for gradient_step in range(gradient_steps):
             # Sample replay buffer
-            replay_data = self.replay_buffer.sample(batch_size, env=self._vec_normalize_env)
-            
+            replay_data = self.replay_buffer.sample(original_batch_size, env=self._vec_normalize_env)
+            #print( f"ReplayDataSize={len(replay_data.observations)}" )
+
+            batch_size = len( replay_data.observations )
+
             # We need to sample because `log_std` may have changed between two gradient steps
             if self.use_sde:
                 self.actor.reset_noise()
