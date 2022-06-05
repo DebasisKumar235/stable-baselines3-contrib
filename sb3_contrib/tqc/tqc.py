@@ -200,12 +200,15 @@ class TQC(OffPolicyAlgorithm):
         # Sample replay buffer
         replay_data = self.expert_replay_buffer.get_all_data( env=self._vec_normalize_env )
 
+        ReplayBufferSize = 0
         for gradient_step in range(gradient_steps):            
             # We need to sample because `log_std` may have changed between two gradient steps
             if self.use_sde:
                 self.actor.reset_noise()
 
             batch_size = len( replay_data.observations )
+            ReplayBufferSize = batch_size
+
             # Action by the current actor for the sampled state
             actions_pi, log_prob = self.actor.action_log_prob(replay_data.observations)
             log_prob = log_prob.reshape(-1, 1)
@@ -279,6 +282,7 @@ class TQC(OffPolicyAlgorithm):
 
         self._n_updates += gradient_steps
 
+        print( f"ReplayBufferSize={ReplayBufferSize}" )
         self.logger.record("train/n_updates", self._n_updates, exclude="tensorboard")
         self.logger.record("train/ent_coef", np.mean(ent_coefs))
         self.logger.record("train/actor_loss", np.mean(actor_losses))
@@ -302,12 +306,14 @@ class TQC(OffPolicyAlgorithm):
         ent_coef_losses, ent_coefs = [], []
         actor_losses, critic_losses = [], []
         original_batch_size = batch_size
+        ReplayBufferSize = 0
         for gradient_step in range(gradient_steps):
             # Sample replay buffer
             replay_data = self.replay_buffer.sample(original_batch_size, env=self._vec_normalize_env)
             #print( f"ReplayDataSize={len(replay_data.observations)}" )
 
             batch_size = len( replay_data.observations )
+            ReplayBufferSize = batch_size
 
             # We need to sample because `log_std` may have changed between two gradient steps
             if self.use_sde:
@@ -383,6 +389,8 @@ class TQC(OffPolicyAlgorithm):
 
         self._n_updates += gradient_steps
 
+        print( f'ReplayBufferSize={ReplayBufferSize}' )
+        
         self.logger.record("train/n_updates", self._n_updates, exclude="tensorboard")
         self.logger.record("train/ent_coef", np.mean(ent_coefs))
         self.logger.record("train/actor_loss", np.mean(actor_losses))
